@@ -19,8 +19,9 @@
     "eject": "react-scripts eject",
     "react-start": "react-scripts start",
     "react-build": "react-scripts build",
-    "electron-dev": "concurrently \"npm run react-start\" \"wait-on http://localhost:3000 && electron .\"",
-    "electron-build": "npm run react-build && electron-builder"
+    "electron-dev": "npm run build:speech && concurrently \"npm run react-start\" \"wait-on http://localhost:3000 && electron .\"",
+    "electron-build": "npm run build:speech && npm run react-build && electron-builder",
+    "build:speech": "mkdir -p native/bin && swiftc -O -swift-version 5 native/peter-speech/main.swift -o native/bin/peter-speech -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker native/peter-speech/Info.plist"
   },
   "eslintConfig": {
     "extends": [
@@ -47,9 +48,45 @@
     "electron-builder": "^26.15.3",
     "electron-is-dev": "^3.0.1",
     "postcss": "^8.5.26",
-    "tailwindcss": "^4.3.3",
+    "tailwindcss": "^3.4.19",
     "wait-on": "^9.1.0"
   },
   "main": "public/electron-main.js",
-  "homepage": "./"
+  "homepage": "./",
+  "build": {
+    "extends": null,
+    "appId": "com.peter.macos",
+    "productName": "Peter",
+    "files": [
+      "build/**/*",
+      "public/electron-main.js",
+      "public/preload.js",
+      "public/peter-*.js",
+      "package.json"
+    ],
+    "directories": {
+      "buildResources": "public"
+    },
+    "protocols": [
+      {
+        "name": "Peter",
+        "schemes": [
+          "peter"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Peter listens when you talk to plan your day or week.",
+        "NSSpeechRecognitionUsageDescription": "Peter turns what you say into text on your Mac so it can plan your day or week."
+      }
+    },
+    "extraResources": [
+      {
+        "from": "native/bin/peter-speech",
+        "to": "peter-speech"
+      }
+    ]
+  }
 }

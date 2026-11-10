@@ -1,0 +1,14 @@
+name = "peter-api"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+
+[vars]
+CLAUDE_MODEL = "claude-haiku-5-5"
+# Set after your first deploy, e.g. https://peter-api.<your-subdomain>.workers.dev/notion/callback
+NOTION_REDIRECT_URI = "https://peter-api.peter-macos.workers.dev/notion/callback"
+NOTION_CLIENT_ID = "400d872b-594c-8134-bdc4-0037a71d264c"
+
+# Secrets (never put these in this file). Set them with:
+#   npx wrangler secret put ANTHROPIC_API_KEY
+#   npx wrangler secret put NOTION_CLIENT_SECRET
+#   npx wrangler secret put PETER_APP_TOKEN
