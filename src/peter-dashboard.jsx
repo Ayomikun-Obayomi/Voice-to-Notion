@@ -53,6 +53,23 @@ export default function PeterDashboard() {
   const [session, setSession] = useState(null); // null, or { mode } while a plan session is open
   const [isGlobalListening, setIsGlobalListening] = useState(false);
   const [voiceError, setVoiceError] = useState(null);
+  // Accessibility: for people who can't read the screen, Peter says hello out loud on startup.
+  const [greetAloud, setGreetAloud] = useState(() => {
+    try {
+      return localStorage.getItem('greetAloud') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const changeGreetAloud = (on) => {
+    setGreetAloud(on);
+    try {
+      localStorage.setItem('greetAloud', String(on));
+    } catch {
+      /* the setting just won't be remembered */
+    }
+  };
 
   const stopTaskRef = useRef(null);
   const stopGlobalRef = useRef(null);
@@ -235,7 +252,8 @@ export default function PeterDashboard() {
     loadTasks();
     const offConnected = window.peter.onNotionConnected(() => loadTasks());
     // Start the wake word only once the greeting is queued, so it doesn't hear "Peter" in it.
-    greet(startGlobalListening);
+    if (greetAloud) greet(startGlobalListening);
+    else startGlobalListening();
     return () => {
       offConnected();
       stopGlobalListening();
@@ -255,6 +273,19 @@ export default function PeterDashboard() {
           ) : (
             <button onClick={() => window.peter.connectNotion()} style={{ width: '100%', padding: '10px', marginTop: '12px', background: '#0f172a', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>Connect Notion</button>
           )}
+        </div>
+
+        <div style={{ marginTop: '20px', padding: '15px', background: 'white', borderRadius: '4px', border: '1px solid #ccc' }}>
+          <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={greetAloud}
+              onChange={(e) => changeGreetAloud(e.target.checked)}
+              style={{ marginRight: '10px', width: '18px', height: '18px', cursor: 'pointer' }}
+            />
+            <span>Greet me out loud (accessibility)</span>
+          </label>
+          <p style={{ fontSize: '12px', color: '#64748b', margin: '8px 0 0 28px' }}>For people who can't read the screen. When Peter opens, it says hello and explains how to start.</p>
         </div>
       </div>
     );
