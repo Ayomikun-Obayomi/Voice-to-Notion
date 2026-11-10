@@ -22,6 +22,8 @@ function pickVoice() {
   );
 }
 
+const GREETING = `Hi, I'm Peter. Say "Hey Peter" whenever you want to plan your day or your week.`;
+
 // "Peter", plus spellings the recognizer sometimes hears instead.
 const WAKE_WORD = /\b(peter|pete|pita|peta)\b/;
 
@@ -64,6 +66,24 @@ export default function PeterDashboard() {
       if (callback) callback();
     };
     window.speechSynthesis.speak(utterance);
+  };
+
+  // Says hello when the app opens. The voice list loads asynchronously, so wait for it
+  // (briefly) or pickVoice() falls back to the default novelty voice.
+  const greet = (thenListen) => {
+    let done = false;
+    const sayHello = () => {
+      if (done) return;
+      done = true;
+      window.speechSynthesis.cancel();
+      speakMessage(GREETING);
+      thenListen();
+    };
+    if (window.speechSynthesis.getVoices().length) sayHello();
+    else {
+      window.speechSynthesis.addEventListener('voiceschanged', sayHello, { once: true });
+      setTimeout(sayHello, 1000);
+    }
   };
 
   const loadTasks = useCallback(async () => {
@@ -123,7 +143,8 @@ export default function PeterDashboard() {
       if (isFinal || modeFromSpeech(heard)) wake();
       else if (!wakeTimer) wakeTimer = setTimeout(wake, 1500);
     };
-    const stop = listen({
+    // Waits for Peter to finish talking, since Peter's own lines can say "Peter".
+    const stop = listenWhenQuiet({
       onPartial: (text) => onText(text, false),
       onFinal: (text) => onText(text, true),
       onError: onSpeechError,
@@ -212,9 +233,9 @@ export default function PeterDashboard() {
 
   useEffect(() => {
     loadTasks();
-    window.speechSynthesis.getVoices(); // starts loading the voice list so pickVoice() has it
     const offConnected = window.peter.onNotionConnected(() => loadTasks());
-    startGlobalListening();
+    // Start the wake word only once the greeting is queued, so it doesn't hear "Peter" in it.
+    greet(startGlobalListening);
     return () => {
       offConnected();
       stopGlobalListening();
