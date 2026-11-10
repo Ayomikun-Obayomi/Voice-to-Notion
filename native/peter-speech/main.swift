@@ -20,6 +20,12 @@ func emit(_ obj: [String: Any]) {
   fflush(stdout)
 }
 
+// Set PETER_SPEECH_DEBUG=1 to log recognizer results to stderr.
+let debugOn = ProcessInfo.processInfo.environment["PETER_SPEECH_DEBUG"] != nil
+func debug(_ message: String) {
+  if debugOn { FileHandle.standardError.write(("[peter-speech] " + message + "\n").data(using: .utf8)!) }
+}
+
 func fail(_ code: String, _ message: String) -> Never {
   emit(["type": "error", "code": code, "message": message])
   exit(1)
@@ -27,6 +33,7 @@ func fail(_ code: String, _ message: String) -> Never {
 
 // A phrase ends after this much silence, like the browser's speech API.
 let pauseSeconds = 1.2
+let maxPhraseSeconds = 15.0
 
 final class Listener {
   let recognizer: SFSpeechRecognizer
@@ -34,6 +41,7 @@ final class Listener {
   var request: SFSpeechAudioBufferRecognitionRequest?
   var task: SFSpeechRecognitionTask?
   var lastText = ""
+  var phraseStart = Date()
   var pauseTimer: Timer?
   var failuresInARow = 0
 
@@ -66,33 +74,47 @@ final class Listener {
     if recognizer.supportsOnDeviceRecognition { req.requiresOnDeviceRecognition = true }
     request = req
     lastText = ""
+    phraseStart = Date()
     task = recognizer.recognitionTask(with: req) { [weak self] result, error in
       DispatchQueue.main.async { self?.handle(req, result, error) }
     }
   }
 
-  // Ends the current phrase. Its final text still arrives through handle().
+  // Ends the current phrase after a pause. Sends its text as final ourselves: once a request
+  // ends, the recognizer often answers "No speech detected" instead of a final result.
   func finishPhrase() {
     pauseTimer?.invalidate()
-    guard let old = request else { return }
+    if !lastText.isEmpty { emit(["type": "final", "text": lastText]) }
+    let oldTask = task
+    request?.endAudio()
     newPhrase()
-    old.endAudio()
+    oldTask?.cancel()
   }
 
   func handle(_ req: SFSpeechAudioBufferRecognitionRequest, _ result: SFSpeechRecognitionResult?, _ error: Error?) {
     let isCurrent = req === request
+    debug("result current=\(isCurrent) final=\(result?.isFinal ?? false) text=\(result?.bestTranscription.formattedString ?? "-") error=\(error.map { "\($0)" } ?? "-")")
+
+    // Phrases we already finished were sent as final in finishPhrase().
+    guard isCurrent else { return }
 
     if let result = result {
       failuresInARow = 0
       let text = result.bestTranscription.formattedString
       if result.isFinal {
+        pauseTimer?.invalidate()
         if !text.isEmpty { emit(["type": "final", "text": text]) }
-        if isCurrent { pauseTimer?.invalidate(); newPhrase() }
+        newPhrase()
         return
       }
-      guard isCurrent, text != lastText else { return }
+      guard text != lastText else { return }
       lastText = text
       emit(["type": "partial", "text": text])
+      // With constant background talk there's never a pause, so cap how long a phrase runs.
+      if Date().timeIntervalSince(phraseStart) > maxPhraseSeconds {
+        finishPhrase()
+        return
+      }
       pauseTimer?.invalidate()
       pauseTimer = Timer.scheduledTimer(withTimeInterval: pauseSeconds, repeats: false) { [weak self] _ in
         self?.finishPhrase()
@@ -102,10 +124,13 @@ final class Listener {
 
     // Errors also happen normally (for example "no speech detected"): keep the words we had
     // and start a fresh phrase. Only give up if it keeps failing without hearing anything.
-    guard isCurrent, error != nil else { return }
+    guard error != nil else { return }
     pauseTimer?.invalidate()
     if !lastText.isEmpty { emit(["type": "final", "text": lastText]) }
-    failuresInARow += 1
+    // Silence ("No speech detected", code 1110) is normal while waiting for the wake word.
+    let nsError = error! as NSError
+    let isSilence = nsError.domain == "kAFAssistantErrorDomain" && nsError.code == 1110
+    if !isSilence { failuresInARow += 1 }
     if failuresInARow >= 5 {
       fail("recognizer-failed", "Speech recognition keeps failing: \(error!.localizedDescription)")
     }

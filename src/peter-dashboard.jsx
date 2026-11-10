@@ -8,6 +8,23 @@ function modeFromSpeech(text) {
   return undefined;
 }
 
+// The browser's default voice on macOS is often a novelty one (Albert, Bubbles…), so pick a
+// natural voice: a downloaded Premium/Enhanced one if there is one, otherwise these in order.
+const PREFERRED_VOICES = ['Samantha', 'Daniel', 'Reed (English (US))', 'Eddy (English (US))'];
+
+function pickVoice() {
+  const voices = window.speechSynthesis.getVoices().filter((v) => v.lang.startsWith('en'));
+  return (
+    voices.find((v) => v.lang === 'en-US' && /\((Premium|Enhanced)\)/.test(v.name)) ||
+    PREFERRED_VOICES.map((name) => voices.find((v) => v.name === name)).find(Boolean) ||
+    voices.find((v) => v.lang === 'en-US') ||
+    null
+  );
+}
+
+// "Peter", plus spellings the recognizer sometimes hears instead.
+const WAKE_WORD = /\b(peter|pete|pita|peta)\b/;
+
 // Speech comes from Apple's recognizer through the peter-speech helper (public/peter-speech.js).
 // Only one listener runs at a time. Returns a function that stops it.
 function listen({ onPartial, onFinal, onError, onEnd }) {
@@ -41,6 +58,7 @@ export default function PeterDashboard() {
 
   const speakMessage = (text, callback) => {
     const utterance = new SpeechSynthesisUtterance(text);
+    utterance.voice = pickVoice();
     utterance.rate = 1;
     utterance.onend = () => {
       if (callback) callback();
@@ -85,21 +103,55 @@ export default function PeterDashboard() {
     setIsGlobalListening(false);
   };
 
-  // Wake word: waits for a phrase with "Peter" in it.
+  // Wake word: reacts as soon as "Peter" is heard, then gives the user a moment to say
+  // "plan my day/week" (or until the phrase ends) before opening the session.
   const startGlobalListening = () => {
     if (stopGlobalRef.current) return;
     setIsGlobalListening(true);
-    stopGlobalRef.current = listen({
-      onFinal: (text) => {
-        const t = text.toLowerCase();
-        if (t.includes('peter')) {
-          stopGlobalListening();
-          openSession(modeFromSpeech(t));
-        }
-      },
+    let heard = '';
+    let wakeTimer = null;
+    const wake = () => {
+      clearTimeout(wakeTimer);
+      stopGlobalListening();
+      openSession(modeFromSpeech(heard), { byVoice: true });
+    };
+    const onText = (text, isFinal) => {
+      const t = text.toLowerCase();
+      if (!wakeTimer && !WAKE_WORD.test(t)) return;
+      const at = t.search(WAKE_WORD);
+      if (at !== -1) heard = t.slice(at);
+      if (isFinal || modeFromSpeech(heard)) wake();
+      else if (!wakeTimer) wakeTimer = setTimeout(wake, 1500);
+    };
+    const stop = listen({
+      onPartial: (text) => onText(text, false),
+      onFinal: (text) => onText(text, true),
       onError: onSpeechError,
       onEnd: stopGlobalListening,
     });
+    stopGlobalRef.current = () => {
+      clearTimeout(wakeTimer);
+      stop();
+    };
+  };
+
+  // Like listen(), but waits until Peter stops talking, or the mic types out Peter's own words.
+  const listenWhenQuiet = (handlers) => {
+    let stopped = false;
+    let stopListening = null;
+    const begin = () => {
+      if (stopped) return;
+      if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+        setTimeout(begin, 200);
+        return;
+      }
+      stopListening = listen(handlers);
+    };
+    setTimeout(begin, 300);
+    return () => {
+      stopped = true;
+      stopListening?.();
+    };
   };
 
   // Mic for the plan session: keeps every finished phrase and shows the one in progress after it.
@@ -108,32 +160,28 @@ export default function PeterDashboard() {
     finalTranscriptRef.current = '';
     setTranscript('');
     setIsListening(true);
+    stopTaskRef.current = listenWhenQuiet({
+      onPartial: (text) => setTranscript(finalTranscriptRef.current + text),
+      onFinal: (text) => {
+        finalTranscriptRef.current += text + ' ';
+        setTranscript(finalTranscriptRef.current);
+      },
+      onError: onSpeechError,
+      onEnd: () => setIsListening(false),
+    });
+  };
 
-    let stopped = false;
-    let stopListening = null;
-    // Wait until Peter stops talking, or the mic types out Peter's own words.
-    const begin = () => {
-      if (stopped) return;
-      if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
-        setTimeout(begin, 200);
-        return;
-      }
-      stopListening = listen({
-        onPartial: (text) => setTranscript(finalTranscriptRef.current + text),
-        onFinal: (text) => {
-          finalTranscriptRef.current += text + ' ';
-          setTranscript(finalTranscriptRef.current);
-        },
-        onError: onSpeechError,
-        onEnd: () => setIsListening(false),
-      });
+  // After "Hey Peter" with no day/week, the picker asks what to plan: listen for the answer.
+  const listenForMode = () => {
+    stopTaskRef.current?.();
+    const pick = (text) => {
+      const mode = modeFromSpeech(text.toLowerCase());
+      if (!mode) return;
+      stopTaskRef.current?.();
+      stopTaskRef.current = null;
+      setSession({ mode });
     };
-    setTimeout(begin, 300);
-
-    stopTaskRef.current = () => {
-      stopped = true;
-      stopListening?.();
-    };
+    stopTaskRef.current = listenWhenQuiet({ onPartial: pick, onFinal: pick, onError: onSpeechError });
   };
 
   const stopTaskListening = () => {
@@ -142,9 +190,10 @@ export default function PeterDashboard() {
     setIsListening(false);
   };
 
-  const openSession = (mode) => {
+  const openSession = (mode, { byVoice = false } = {}) => {
     stopGlobalListening();
     setSession({ mode });
+    if (!mode && byVoice) listenForMode();
   };
 
   const closeSession = () => {
@@ -163,6 +212,7 @@ export default function PeterDashboard() {
 
   useEffect(() => {
     loadTasks();
+    window.speechSynthesis.getVoices(); // starts loading the voice list so pickVoice() has it
     const offConnected = window.peter.onNotionConnected(() => loadTasks());
     startGlobalListening();
     return () => {
@@ -229,11 +279,11 @@ export default function PeterDashboard() {
       </div>
       {!session && (
         <div style={{ background: 'white', padding: '16px', borderTop: '1px solid #e2e8f0' }}>
-          <div style={{ display: 'flex', gap: '10px' }}>
-            <button onClick={() => openSession('day')} style={{ flex: 1, padding: '12px', background: '#2563eb', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer' }}>☀️ Plan my day</button>
-            <button onClick={() => openSession('week')} style={{ flex: 1, padding: '12px', background: '#4f46e5', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer' }}>🗓️ Plan my week</button>
-          </div>
-          <p style={{ textAlign: 'center', fontSize: '12px', color: '#64748b', margin: '10px 0 0' }}>Or say "Hey Peter" to start planning</p>
+          <p style={{ textAlign: 'center', fontSize: '13px', color: '#64748b', margin: 0 }}>Say "Hey Peter" to start planning</p>
+          {/* Without voice there's no other way in, so offer the typed flow. */}
+          {voiceError && (
+            <button onClick={() => openSession()} style={{ display: 'block', margin: '8px auto 0', background: 'none', border: 'none', color: '#2563eb', fontSize: '13px', cursor: 'pointer' }}>Plan by typing instead</button>
+          )}
         </div>
       )}
     </div>
