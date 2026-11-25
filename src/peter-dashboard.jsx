@@ -308,6 +308,7 @@ export default function PeterDashboard() {
             onStartListening={startTaskListening}
             onStopListening={stopTaskListening}
             onClose={closeSession}
+            showModeButtons={!!voiceError}
             speak={(text) => { window.speechSynthesis.cancel(); speakMessage(text); }}
           />
         ) : (

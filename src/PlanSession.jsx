@@ -10,6 +10,8 @@ import React, { useEffect, useRef, useState } from 'react';
 //   onStartListening / onStopListening          Hooks into the existing voice code.
 //   onClose       () => void
 //   speak         (text) => void                Optional. Defaults to the system voice.
+//   showModeButtons boolean                     Show Plan my day / week buttons on the picker
+//                                               (when the user can't answer by voice).
 
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -59,6 +61,7 @@ export default function PlanSession({
   onStopListening,
   onClose,
   speak = defaultSpeak,
+  showModeButtons = true,
 }) {
   const [step, setStep] = useState(initialMode ? 'loading' : 'choose'); // choose → loading → talk → planning → review → saving → done
   const [connected, setConnected] = useState(null);
@@ -195,7 +198,8 @@ export default function PlanSession({
       <PeterLine text={peterSays} />
       {error && <ErrorLine text={error} />}
 
-      {step === 'choose' && (
+      {/* Peter asks out loud and the user answers "day" or "week"; buttons only without voice. */}
+      {step === 'choose' && showModeButtons && (
         <div className="grid grid-cols-2 gap-3">
           <button className="rounded-xl bg-blue-600 py-4 font-medium text-white hover:bg-blue-700" onClick={() => begin('day')}>
             ☀️ Plan my day
