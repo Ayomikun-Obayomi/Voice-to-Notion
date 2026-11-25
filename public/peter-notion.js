@@ -49,7 +49,10 @@ function saveConnection({ token: t, template, workspace }) {
 function disconnect() {
   store.setSecret('notionToken', null);
   store.set('peterPageId', null);
+  store.set('weekPlans', null);
+  store.set('dayPlans', null);
   store.set('activeWeek', null);
+  store.set('activeDay', null);
 }
 
 // ---------- Peter's home page ----------
@@ -125,11 +128,12 @@ async function addRows(databaseId, tasks, mode) {
   return created;
 }
 
-async function createSession({ mode, range, tasks }) {
+// `date` is the day being planned (day mode). The caller records the new plan in the store.
+async function createSession({ mode, range, date, tasks }) {
   const peterPageId = await ensurePeterPage();
   const title = mode === 'week'
     ? `Week · ${dates.weekLabel(range)}`
-    : `Day · ${dates.dayLabel(dates.todayISO())}`;
+    : `Day · ${dates.dayLabel(date)}`;
 
   const page = await notion('POST', '/pages', {
     parent: { page_id: peterPageId },
@@ -140,17 +144,11 @@ async function createSession({ mode, range, tasks }) {
   const db = await notion('POST', '/databases', {
     parent: { type: 'page_id', page_id: page.id },
     is_inline: true,
-    title: text(mode === 'week' ? 'This week' : 'Today'),
+    title: text('Tasks'),
     properties: databaseProperties(mode, range),
   });
 
   const created = await addRows(db.id, tasks, mode);
-
-  if (mode === 'week') {
-    store.set('activeWeek', { databaseId: db.id, pageId: page.id, start: range.start, end: range.end });
-  } else {
-    store.set('activeDay', { databaseId: db.id, pageId: page.id, date: dates.todayISO() });
-  }
   return { pageId: page.id, databaseId: db.id, url: page.url, tasks: created };
 }
 

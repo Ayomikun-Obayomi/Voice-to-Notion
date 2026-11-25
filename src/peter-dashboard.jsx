@@ -1,12 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import PlanSession from './PlanSession';
-
-// Picks the plan mode out of what was said with the wake word ("Peter, plan my week").
-function modeFromSpeech(text) {
-  if (/\bweek\b/.test(text)) return 'week';
-  if (/\b(day|today)\b/.test(text)) return 'day';
-  return undefined;
-}
+import { parsePlanTarget } from './peter-intent';
 
 // The browser's default voice on macOS is often a novelty one (Albert, Bubbles…), so pick a
 // natural voice: a downloaded Premium/Enhanced one if there is one, otherwise these in order.
@@ -50,7 +44,7 @@ export default function PeterDashboard() {
   const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [showSettings, setShowSettings] = useState(false);
-  const [session, setSession] = useState(null); // null, or { mode } while a plan session is open
+  const [session, setSession] = useState(null); // null, or { target } while a plan session is open
   const [isGlobalListening, setIsGlobalListening] = useState(false);
   const [voiceError, setVoiceError] = useState(null);
   // Accessibility: for people who can't read the screen, Peter says hello out loud on startup.
@@ -140,25 +134,28 @@ export default function PeterDashboard() {
     setIsGlobalListening(false);
   };
 
-  // Wake word: reacts as soon as "Peter" is heard, then gives the user a moment to say
-  // "plan my day/week" (or until the phrase ends) before opening the session.
+  // Wake word: once "Peter" is heard, waits for the user to finish the sentence ("Hey Peter,
+  // I want to plan something for tomorrow"), then opens a session for what they asked.
+  // Waiting matters: mid-sentence the recognizer can show "today" on the way to "tomorrow".
   const startGlobalListening = () => {
     if (stopGlobalRef.current) return;
     setIsGlobalListening(true);
-    let heard = '';
-    let wakeTimer = null;
+    let heard = null;
+    let settleTimer = null;
     const wake = () => {
-      clearTimeout(wakeTimer);
+      clearTimeout(settleTimer);
       stopGlobalListening();
-      openSession(modeFromSpeech(heard), { byVoice: true });
+      openSession(parsePlanTarget(heard), { byVoice: true });
     };
     const onText = (text, isFinal) => {
       const t = text.toLowerCase();
-      if (!wakeTimer && !WAKE_WORD.test(t)) return;
       const at = t.search(WAKE_WORD);
       if (at !== -1) heard = t.slice(at);
-      if (isFinal || modeFromSpeech(heard)) wake();
-      else if (!wakeTimer) wakeTimer = setTimeout(wake, 1500);
+      else if (heard === null) return;
+      if (isFinal) return wake();
+      // Still talking: open once they've been quiet for a moment.
+      clearTimeout(settleTimer);
+      settleTimer = setTimeout(wake, 1500);
     };
     // Waits for Peter to finish talking, since Peter's own lines can say "Peter".
     const stop = listenWhenQuiet({
@@ -168,7 +165,7 @@ export default function PeterDashboard() {
       onEnd: stopGlobalListening,
     });
     stopGlobalRef.current = () => {
-      clearTimeout(wakeTimer);
+      clearTimeout(settleTimer);
       stop();
     };
   };
@@ -209,17 +206,19 @@ export default function PeterDashboard() {
     });
   };
 
-  // After "Hey Peter" with no day/week, the picker asks what to plan: listen for the answer.
-  const listenForMode = () => {
+  // After a bare "Hey Peter", the picker asks what to plan: listen for the answer
+  // ("my day", "tomorrow", "Friday", "next week"…).
+  // Only finished phrases, so "tomorrow" isn't mistaken for "today" halfway through.
+  const listenForTarget = () => {
     stopTaskRef.current?.();
     const pick = (text) => {
-      const mode = modeFromSpeech(text.toLowerCase());
-      if (!mode) return;
+      const target = parsePlanTarget(text);
+      if (!target) return;
       stopTaskRef.current?.();
       stopTaskRef.current = null;
-      setSession({ mode });
+      setSession({ target });
     };
-    stopTaskRef.current = listenWhenQuiet({ onPartial: pick, onFinal: pick, onError: onSpeechError });
+    stopTaskRef.current = listenWhenQuiet({ onFinal: pick, onError: onSpeechError });
   };
 
   const stopTaskListening = () => {
@@ -228,10 +227,11 @@ export default function PeterDashboard() {
     setIsListening(false);
   };
 
-  const openSession = (mode, { byVoice = false } = {}) => {
+  // `target` comes from parsePlanTarget(); without one the session asks what to plan.
+  const openSession = (target, { byVoice = false } = {}) => {
     stopGlobalListening();
-    setSession({ mode });
-    if (!mode && byVoice) listenForMode();
+    setSession({ target });
+    if (!target && byVoice) listenForTarget();
   };
 
   const closeSession = () => {
@@ -302,7 +302,7 @@ export default function PeterDashboard() {
       <div style={{ flex: 1, overflow: 'auto', padding: '16px' }}>
         {session ? (
           <PlanSession
-            initialMode={session.mode}
+            initialTarget={session.target}
             liveTranscript={transcript}
             isListening={isListening}
             onStartListening={startTaskListening}

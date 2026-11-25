@@ -27,11 +27,12 @@ Existing tasks (if any are given):
 
 Reply with ONLY valid JSON, no other text.`;
 
-function dayPrompt({ transcript, today, existing }) {
-  return `Mode: PLAN MY DAY
+function dayPrompt({ transcript, today, date = today, existing }) {
+  return `Mode: PLAN A DAY
 Today: ${dates.dayLabel(today)} (${today})
+Day being planned: ${date === today ? 'today' : `${dates.dayLabel(date)} (${date})`}
 
-Existing tasks already planned for today, in order:
+Existing tasks already planned for that day, in order:
 ${existing.length ? JSON.stringify(existing.map((t) => ({ id: t.id, title: t.title, why: t.why })), null, 2) : '(none)'}
 
 What the user said:
@@ -97,7 +98,7 @@ function parseJSON(text) {
 }
 
 // Cleans Claude's answer so the rest of the app can trust it.
-function normalize(result, { mode, existing, range, today }) {
+function normalize(result, { mode, existing, range, today, date: dayDate = today }) {
   const existingIds = new Set(existing.map((t) => t.id));
   const removed = new Set((result.removed_ids || []).filter((id) => existingIds.has(id)));
   const seen = new Set();
@@ -108,7 +109,7 @@ function normalize(result, { mode, existing, range, today }) {
       const id = t.id && existingIds.has(t.id) && !removed.has(t.id) && !seen.has(t.id) ? t.id : null;
       if (id) seen.add(id);
       const original = id ? existing.find((e) => e.id === id) : null;
-      let date = mode === 'week' ? t.date : today;
+      let date = mode === 'week' ? t.date : dayDate;
       if (mode === 'week' && (!date || !dates.inRange(date, range) || date < today)) {
         date = original?.date || today;
       }
@@ -152,9 +153,9 @@ async function plan(context, transcript) {
   const today = dates.todayISO();
   const prompt = context.mode === 'week'
     ? weekPrompt({ transcript, today, range: context.range, existing: context.existing })
-    : dayPrompt({ transcript, today, existing: context.existing });
+    : dayPrompt({ transcript, today, date: context.date, existing: context.existing });
   const raw = await callClaude(prompt);
-  return normalize(raw, { mode: context.mode, existing: context.existing, range: context.range, today });
+  return normalize(raw, { mode: context.mode, existing: context.existing, range: context.range, today, date: context.date });
 }
 
 module.exports = { plan, normalize, renumber, parseJSON, dayPrompt, weekPrompt };

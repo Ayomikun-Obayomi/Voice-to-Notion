@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState } from 'react';
 //
 // Props:
 //   initialMode   'day' | 'week' | undefined   Skip the picker if the voice flow already knows the mode.
+//   initialTarget { mode, date?, weekStart? }    Same, for a specific day or week ("tomorrow", "next week").
 //   liveTranscript string                       Text from the existing voice recognition. While the user
 //                                               is talking, it flows into the editable box below.
 //   isListening   boolean                       Whether the mic is currently on (for the status line).
@@ -55,6 +56,7 @@ const keyOf = (t) => t.id || t._key || (t._key = `new-${++tempId}`);
 
 export default function PlanSession({
   initialMode,
+  initialTarget,
   liveTranscript = '',
   isListening = false,
   onStartListening,
@@ -63,7 +65,7 @@ export default function PlanSession({
   speak = defaultSpeak,
   showModeButtons = true,
 }) {
-  const [step, setStep] = useState(initialMode ? 'loading' : 'choose'); // choose → loading → talk → planning → review → saving → done
+  const [step, setStep] = useState(initialMode || initialTarget ? 'loading' : 'choose'); // choose → loading → talk → planning → review → saving → done
   const [connected, setConnected] = useState(null);
   const [context, setContext] = useState(null);
   const [peterSays, setPeterSays] = useState('Hello, what can I help you plan today or the entire week?');
@@ -99,14 +101,17 @@ export default function PlanSession({
     if (step === 'talk' && !userEdited.current) setTranscript(liveTranscript);
   }, [liveTranscript, step]);
 
+  const startTarget = initialTarget || (initialMode ? { mode: initialMode } : null);
+  const startKey = startTarget ? JSON.stringify(startTarget) : '';
   useEffect(() => {
-    if (initialMode && connected) begin(initialMode);
-  }, [initialMode, connected]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (startTarget && connected) begin(startTarget);
+  }, [startKey, connected]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function begin(mode) {
+  // `target` is 'day' / 'week' or { mode, date?, weekStart? } (see public/peter-sessions.js).
+  async function begin(target) {
     setError('');
     setStep('loading');
-    const r = await window.peter.startSession(mode);
+    const r = await window.peter.startSession(target);
     if (!r.ok) return fail(r.error);
     setContext(r.data);
     setPeterSays(r.data.greeting);
@@ -263,7 +268,7 @@ export default function PlanSession({
 
       {step === 'review' && (
         <div>
-          {(context.mode === 'week' ? groupByDate(tasks) : [{ date: context.today, tasks: [...tasks].sort((a, b) => a.rank - b.rank) }])
+          {(context.mode === 'week' ? groupByDate(tasks) : [{ date: context.date || context.today, tasks: [...tasks].sort((a, b) => a.rank - b.rank) }])
             .map((group) => (
               <div key={group.date} className="mb-4">
                 {context.mode === 'week' && <h3 className="mb-1 text-sm font-semibold text-slate-700">{dayLabel(group.date)}</h3>}
