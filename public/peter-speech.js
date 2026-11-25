@@ -6,7 +6,14 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
+// The macOS speech service sometimes drops its connection (error 1107). If the helper gives up
+// on it, restart it quietly a few times before telling the user.
+const RESTARTABLE = ['recognizer-failed', 'helper-failed'];
+const MAX_RESTARTS_PER_MINUTE = 3;
+
 let child = null;
+let wanted = false;
+let restarts = [];
 
 function helperPath() {
   return app.isPackaged
@@ -14,8 +21,17 @@ function helperPath() {
     : path.join(__dirname, '../native/bin/peter-speech');
 }
 
+function canRestart() {
+  const now = Date.now();
+  restarts = restarts.filter((t) => now - t < 60000);
+  if (restarts.length >= MAX_RESTARTS_PER_MINUTE) return false;
+  restarts.push(now);
+  return true;
+}
+
 function start(send) {
   if (child) return;
+  wanted = true;
   const bin = helperPath();
   if (!fs.existsSync(bin)) {
     send({ type: 'error', code: 'helper-missing', message: 'Run "npm run build:speech" to build the speech helper.' });
@@ -25,7 +41,19 @@ function start(send) {
   const proc = spawn(bin, ['en-US'], { stdio: ['pipe', 'pipe', 'inherit'] });
   child = proc;
   let buffer = '';
-  let sawError = false;
+  let lastError = null;
+
+  const giveUpOrRestart = () => {
+    if (wanted && RESTARTABLE.includes(lastError.code) && canRestart()) {
+      console.warn('[peter] restarting speech helper after:', lastError.message);
+      setTimeout(() => {
+        if (wanted && !child) start(send);
+      }, 2000);
+      return;
+    }
+    send(lastError);
+    send({ type: 'end' });
+  };
 
   proc.stdout.on('data', (chunk) => {
     if (child !== proc) return;
@@ -37,8 +65,9 @@ function start(send) {
       if (!line) continue;
       try {
         const event = JSON.parse(line);
-        if (event.type === 'error') sawError = true;
-        send(event);
+        // Errors are reported (or retried) when the helper exits.
+        if (event.type === 'error') lastError = event;
+        else send(event);
       } catch {
         console.warn('[peter] speech helper said:', line);
       }
@@ -46,22 +75,28 @@ function start(send) {
   });
 
   proc.on('error', (err) => {
-    sawError = true;
-    send({ type: 'error', code: 'helper-failed', message: err.message });
+    lastError = { type: 'error', code: 'helper-failed', message: err.message };
+    // If it never started there's no 'exit' event to finish up.
+    if (!proc.pid && child === proc) {
+      child = null;
+      giveUpOrRestart();
+    }
   });
 
   proc.on('exit', (code, signal) => {
     // Ignore helpers we stopped on purpose.
     if (child !== proc) return;
     child = null;
-    if (!sawError && !signal && code !== 0) {
-      send({ type: 'error', code: 'helper-failed', message: `Speech helper stopped (exit ${code}).` });
+    if (!lastError && !signal && code !== 0) {
+      lastError = { type: 'error', code: 'helper-failed', message: `Speech helper stopped (exit ${code}).` };
     }
-    send({ type: 'end' });
+    if (lastError) giveUpOrRestart();
+    else send({ type: 'end' });
   });
 }
 
 function stop() {
+  wanted = false;
   const proc = child;
   child = null;
   if (!proc) return;

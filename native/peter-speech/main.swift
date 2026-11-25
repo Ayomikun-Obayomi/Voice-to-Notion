@@ -34,9 +34,15 @@ func fail(_ code: String, _ message: String) -> Never {
 // A phrase ends after this much silence, like the browser's speech API.
 let pauseSeconds = 1.2
 let maxPhraseSeconds = 15.0
+// The connection to macOS's speech service drops after long sessions (error 1107), so swap in
+// a fresh recognizer every few minutes, and after any real error.
+let recognizerLifetimeSeconds = 300.0
+let maxFailuresInARow = 8
 
 final class Listener {
-  let recognizer: SFSpeechRecognizer
+  let locale: Locale
+  var recognizer: SFSpeechRecognizer
+  var recognizerCreated = Date()
   let engine = AVAudioEngine()
   var request: SFSpeechAudioBufferRecognitionRequest?
   var task: SFSpeechRecognitionTask?
@@ -44,9 +50,18 @@ final class Listener {
   var phraseStart = Date()
   var pauseTimer: Timer?
   var failuresInARow = 0
+  var lastFailure = Date.distantPast
 
-  init(recognizer: SFSpeechRecognizer) {
+  init(recognizer: SFSpeechRecognizer, locale: Locale) {
     self.recognizer = recognizer
+    self.locale = locale
+  }
+
+  func freshRecognizer() {
+    if let fresh = SFSpeechRecognizer(locale: locale) {
+      recognizer = fresh
+      recognizerCreated = Date()
+    }
   }
 
   func start() {
@@ -67,6 +82,7 @@ final class Listener {
   }
 
   func newPhrase() {
+    if Date().timeIntervalSince(recognizerCreated) > recognizerLifetimeSeconds { freshRecognizer() }
     let req = SFSpeechAudioBufferRecognitionRequest()
     req.shouldReportPartialResults = true
     req.addsPunctuation = true
@@ -130,11 +146,23 @@ final class Listener {
     // Silence ("No speech detected", code 1110) is normal while waiting for the wake word.
     let nsError = error! as NSError
     let isSilence = nsError.domain == "kAFAssistantErrorDomain" && nsError.code == 1110
-    if !isSilence { failuresInARow += 1 }
-    if failuresInARow >= 5 {
+    if isSilence {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.newPhrase() }
+      return
+    }
+
+    // A real error, like the speech service connection dropping (1107): start over with a
+    // fresh recognizer, waiting a little longer each time. Failures far apart don't add up.
+    if Date().timeIntervalSince(lastFailure) > 60 { failuresInARow = 0 }
+    lastFailure = Date()
+    failuresInARow += 1
+    if failuresInARow >= maxFailuresInARow {
       fail("recognizer-failed", "Speech recognition keeps failing: \(error!.localizedDescription)")
     }
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.newPhrase() }
+    freshRecognizer()
+    if !engine.isRunning { try? engine.start() }
+    let delay = min(0.5 * pow(2.0, Double(failuresInARow - 1)), 8.0)
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in self?.newPhrase() }
   }
 }
 
@@ -144,7 +172,8 @@ FileHandle.standardInput.readabilityHandler = { handle in
 }
 
 let localeId = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "en-US"
-guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: localeId)) else {
+let locale = Locale(identifier: localeId)
+guard let recognizer = SFSpeechRecognizer(locale: locale) else {
   fail("language-not-supported", "Speech recognition doesn't support \(localeId).")
 }
 
@@ -161,7 +190,7 @@ SFSpeechRecognizer.requestAuthorization { status in
           fail("not-allowed", "Peter can't use the microphone. Allow it in System Settings → Privacy & Security → Microphone.")
         }
         guard recognizer.isAvailable else { fail("unavailable", "Speech recognition isn't available right now.") }
-        listener = Listener(recognizer: recognizer)
+        listener = Listener(recognizer: recognizer, locale: locale)
         listener?.start()
       }
     }
